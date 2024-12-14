@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-# uv: dependencies="pandas==2.0.3 numpy==1.26.0 seaborn==0.12.2 matplotlib==3.7.1 requests==2.31.0"
+# uv: dependencies="pandas, numpy, seaborn, matplotlib, requests"
 
 
 
