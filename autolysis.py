@@ -9,7 +9,7 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import requests
 
-# Ensure AIPROXY_TOKEN is set
+# Ensure API Token is set
 API_TOKEN = os.getenv("AIPROXY_TOKEN")
 if not API_TOKEN:
     raise EnvironmentError("Error: AIPROXY_TOKEN environment variable not set.")
@@ -21,8 +21,8 @@ HEADERS = {
     "Content-Type": "application/json"
 }
 
-def install_dependencies():
-    """Ensure seaborn is installed."""
+def check_and_install_dependencies():
+    """Ensure required dependencies are installed."""
     try:
         import seaborn
     except ImportError:
@@ -30,7 +30,7 @@ def install_dependencies():
         os.system("pip install seaborn")
         import seaborn
 
-install_dependencies()
+check_and_install_dependencies()
 
 def load_data(file_path):
     """Load CSV file with fallback for encoding issues."""
@@ -49,22 +49,23 @@ def analyze_data(df):
     numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
     numeric_df = df.apply(pd.to_numeric, errors='coerce')
 
-    correlation_matrix = numeric_df.corr().to_dict() if len(numeric_cols) > 1 else {}
+    correlation_matrix = numeric_df.corr()
+    significant_correlations = (
+        correlation_matrix[correlation_matrix.abs() > 0.5]
+        .stack()
+        .reset_index()
+        .query("level_0 != level_1")  # Avoid self-correlations
+        .to_dict(orient="records")
+    )
     stats = df.describe(include="all").to_dict()
     missing_values = df.isnull().sum().to_dict()
-
-    # Additional insights
-    unique_counts = df.nunique().to_dict()
-    sample_trends = df.head(10).to_dict()  # Top 10 rows as a sample insight
 
     return {
         "shape": df.shape,
         "columns": df.columns.tolist(),
         "missing_values": missing_values,
-        "unique_values": unique_counts,
         "stats": stats,
-        "sample_trends": sample_trends,
-        "correlation_matrix": correlation_matrix
+        "significant_correlations": significant_correlations,
     }
 
 def generate_visualizations(df, output_dir):
@@ -105,20 +106,21 @@ def generate_visualizations(df, output_dir):
 
 def generate_readme(summary, output_dir):
     """Generate README content using dynamic AI Proxy prompts."""
+    correlation_summary = "\n".join(
+        [f"- {item['level_0']} and {item['level_1']}: {item[0]:.2f}" for item in summary['significant_correlations']]
+    ) if summary["significant_correlations"] else "No significant correlations found."
+
     prompt = f"""
-    Generate a dataset summary in Markdown format:
-    - Shape: {summary['shape']}
-    - Columns: {summary['columns']}
+    Create a README summarizing the dataset analysis:
+    - Dataset shape: {summary['shape']}
+    - Columns: {', '.join(summary['columns'])}
     - Missing Values: {summary['missing_values']}
-    - Unique Values: {summary['unique_values']}
-    - Correlation Insights: {summary['correlation_matrix'] if summary['correlation_matrix'] else "No correlations detected."}
-    - Sample Trends: {summary['sample_trends']}
+    - Significant Correlations: {correlation_summary}
 
     Include:
-    - An introduction to the dataset
-    - Key insights based on statistics
-    - Descriptions of the generated visualizations and their importance
-    - Highlight any trends or patterns
+    - Insights derived from the data
+    - Visualizations and their interpretations
+    - Any trends or patterns detected.
     """
 
     data = {
@@ -137,7 +139,6 @@ def generate_readme(summary, output_dir):
         print(f"Error generating README: {e}")
         readme_content = "README generation failed. Please check your analysis."
 
-    # Save README.md
     with open(os.path.join(output_dir, "README.md"), "w") as file:
         file.write(readme_content)
 
