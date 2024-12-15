@@ -1,5 +1,15 @@
 #!/usr/bin/env python
-# uv: dependencies="pandas==2.0.3, numpy==1.25.0, seaborn==0.12.2, matplotlib==3.8.0, requests==2.31.0"
+# /// script
+# requires-python = ">=3.11"
+# dependencies = [
+#   "httpx",
+#   "pandas",
+#   "numpy",
+#   "matplotlib",
+#   "seaborn",
+#   "requests",
+# ]
+# ///
 
 import os
 import sys
@@ -9,31 +19,18 @@ import seaborn as sns
 import matplotlib.pyplot as plt
 import requests
 
-# Ensure API Token is set
 API_TOKEN = os.getenv("AIPROXY_TOKEN")
 if not API_TOKEN:
-    raise EnvironmentError("Error: AIPROXY_TOKEN environment variable not set.")
+    print("Error: AIPROXY_TOKEN environment variable not set.")
+    sys.exit(1)
 
-# Set API headers for AI Proxy
 API_URL = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
 HEADERS = {
     "Authorization": f"Bearer {API_TOKEN}",
     "Content-Type": "application/json"
 }
 
-def check_and_install_dependencies():
-    """Ensure required dependencies are installed."""
-    try:
-        import seaborn
-    except ImportError:
-        print("Seaborn not found. Installing now...")
-        os.system("pip install seaborn==0.12.2")
-        import seaborn
-
-check_and_install_dependencies()
-
 def load_data(file_path):
-    """Load CSV file with fallback for encoding issues."""
     try:
         df = pd.read_csv(file_path, encoding="utf-8")
         print(f"Successfully loaded {file_path}")
@@ -41,22 +38,15 @@ def load_data(file_path):
         df = pd.read_csv(file_path, encoding="latin1")
         print(f"Fallback to Latin-1 encoding for {file_path}")
     except Exception as e:
-        raise FileNotFoundError(f"Error loading file: {e}")
+        print(f"Error loading file: {e}")
+        sys.exit(1)
     return df
 
 def analyze_data(df):
-    """Perform enhanced dataset analysis."""
     numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
-    numeric_df = df.apply(pd.to_numeric, errors='coerce')
+    numeric_df = df.apply(pd.to_numeric, errors="coerce")
+    correlation_matrix = numeric_df.corr().to_dict() if len(numeric_cols) > 1 else {}
 
-    correlation_matrix = numeric_df.corr()
-    significant_correlations = (
-        correlation_matrix[correlation_matrix.abs() > 0.5]
-        .stack()
-        .reset_index()
-        .query("level_0 != level_1")  # Avoid self-correlations
-        .to_dict(orient="records")
-    )
     stats = df.describe(include="all").to_dict()
     missing_values = df.isnull().sum().to_dict()
 
@@ -65,102 +55,133 @@ def analyze_data(df):
         "columns": df.columns.tolist(),
         "missing_values": missing_values,
         "stats": stats,
-        "significant_correlations": significant_correlations,
+        "correlation_matrix": correlation_matrix,
     }
 
 def generate_visualizations(df, output_dir):
-    """Generate annotated visualizations."""
     os.makedirs(output_dir, exist_ok=True)
     numeric_cols = df.select_dtypes(include=np.number).columns
 
-    # Histogram with annotation
+    file_links = []
     if len(numeric_cols) >= 1:
         plt.figure(figsize=(8, 6))
         sns.histplot(df[numeric_cols[0]], kde=True, color="blue")
         plt.title(f"Distribution of {numeric_cols[0]}")
-        plt.xlabel(numeric_cols[0])
-        plt.ylabel("Frequency")
-        plt.savefig(os.path.join(output_dir, "histogram.png"))
+        hist_path = os.path.join(output_dir, "histogram.png")
+        plt.savefig(hist_path)
+        file_links.append(hist_path)
         plt.close()
 
-    # Correlation Heatmap
+    if len(numeric_cols) >= 2:
+        plt.figure(figsize=(8, 6))
+        sns.scatterplot(x=numeric_cols[0], y=numeric_cols[1], data=df)
+        plt.title(f"Scatterplot: {numeric_cols[0]} vs {numeric_cols[1]}")
+        scatter_path = os.path.join(output_dir, "scatterplot.png")
+        plt.savefig(scatter_path)
+        file_links.append(scatter_path)
+        plt.close()
+
     if len(numeric_cols) > 1:
         plt.figure(figsize=(10, 8))
         sns.heatmap(df[numeric_cols].corr(), annot=True, cmap="coolwarm")
         plt.title("Correlation Heatmap")
-        plt.savefig(os.path.join(output_dir, "heatmap.png"))
+        heatmap_path = os.path.join(output_dir, "heatmap.png")
+        plt.savefig(heatmap_path)
+        file_links.append(heatmap_path)
         plt.close()
 
-def generate_markdown(summary, visualizations):
-    """Create enhanced Markdown content for README."""
+    return file_links
+
+def generate_readme(summary, visual_links, output_dir):
+    """
+    Generate a README using multiple LLM calls and improved formatting.
+    """
+    # Step 1: Generate Key Insights
+    insights_prompt = f"""
+    Analyze the following dataset summary and derive key insights:
+
+    - Shape: {summary['shape']}
+    - Columns: {summary['columns']}
+    - Missing Values: {summary['missing_values']}
+    - Correlation Matrix: {summary['correlation_matrix']}
+    """
+
+    insights_response = call_ai(insights_prompt)
+
+    # Step 2: Generate Visualization Descriptions
+    visualization_prompt = f"""
+    Describe the following visualizations in Markdown format:
+
+    - Histogram: {visual_links[0] if len(visual_links) > 0 else "No visualization"}
+    - Scatterplot: {visual_links[1] if len(visual_links) > 1 else "No visualization"}
+    - Heatmap: {visual_links[2] if len(visual_links) > 2 else "No visualization"}
+    """
+
+    visualization_response = call_ai(visualization_prompt)
+
+    # Step 3: Combine Results into a README
     readme_content = f"""
-# Data Analysis Report
+    # Dataset Analysis
 
-## Dataset Overview
-- **Shape**: {summary['shape']}
-- **Columns**: {', '.join(summary['columns'])}
-- **Missing Values**: {summary['missing_values']}
+    ## Overview
+    This document provides an analysis of the dataset, summarizing key findings and visualizations.
 
-## Key Insights
-### Significant Correlations
-{''.join(f"- {item['level_0']} and {item['level_1']}: {item[0]:.2f}\n" for item in summary['significant_correlations']) if summary['significant_correlations'] else "No significant correlations found."}
+    ## Key Insights
+    {insights_response}
 
-## Visualizations
-- Distribution plots and heatmaps included in the output folder.
+    ## Visualizations
+    {visualization_response}
 
-### Trends Observed:
-- Missing values were analyzed and reported.
-- Correlation insights revealed key patterns in the data.
-
----
-
-### Generated by AutoLysis
-    """
-    return readme_content
-
-def generate_readme(summary, visualizations, output_dir):
-    """Generate README file."""
-    readme_content = generate_markdown(summary, visualizations)
-
-    # Call AI Proxy to enhance narrative with LLM
-    prompt = f"""
-    Please enhance the following Markdown report with more engaging language and better structuring:
-    {readme_content}
+    ## Files
+    - [Histogram]({visual_links[0]}) if exists.
+    - [Scatterplot]({visual_links[1]}) if exists.
+    - [Heatmap]({visual_links[2]}) if exists.
     """
 
+    # Save README
+    readme_path = os.path.join(output_dir, "README.md")
+    with open(readme_path, "w") as f:
+        f.write(readme_content)
+    print(f"README generated successfully at: {readme_path}")
+
+def call_ai(prompt):
+    """
+    Helper function to call AI Proxy and return the response.
+    """
     data = {
         "model": "gpt-4o-mini",
         "messages": [
-            {"role": "system", "content": "You are a Markdown editor optimizing reports."},
-            {"role": "user", "content": prompt}
-        ]
+            {"role": "system", "content": "You are an AI assistant specializing in dataset summaries."},
+            {"role": "user", "content": prompt},
+        ],
     }
-
     try:
         response = requests.post(API_URL, headers=HEADERS, json=data)
         response.raise_for_status()
-        readme_content = response.json()['choices'][0]['message']['content']
+        return response.json()["choices"][0]["message"]["content"]
     except Exception as e:
-        print(f"Error generating enhanced README: {e}")
-
-    with open(os.path.join(output_dir, "README.md"), "w") as file:
-        file.write(readme_content)
+        print(f"Error during AI call: {e}")
+        return "Error generating content. Please review the analysis."
 
 def main():
     if len(sys.argv) != 2:
-        raise ValueError("Usage: python autolysis.py <dataset.csv>")
+        print("Usage: python autolysis.py <dataset.csv>")
+        sys.exit(1)
 
     file_path = sys.argv[1]
     output_dir = os.path.splitext(file_path)[0]
 
-    try:
-        df = load_data(file_path)
-        summary = analyze_data(df)
-        generate_visualizations(df, output_dir)
-        generate_readme(summary, {}, output_dir)
-        print("Analysis completed successfully. Check the output folder for results.")
-    except Exception as e:
-        print(f"Error: {e}")
+    # Step 1: Load Data
+    df = load_data(file_path)
+
+    # Step 2: Analyze Data
+    summary = analyze_data(df)
+
+    # Step 3: Generate Visualizations
+    visual_links = generate_visualizations(df, output_dir)
+
+    # Step 4: Generate README
+    generate_readme(summary, visual_links, output_dir)
 
 if __name__ == "__main__":
     main()
