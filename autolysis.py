@@ -4,164 +4,160 @@
 # dependencies = [
 #   "httpx",
 #   "pandas",
-#   "numpy",
-#   "matplotlib",
 #   "seaborn",
+#   "matplotlib",
+#   "scikit-learn",
+#   "python-dotenv",
 #   "requests",
 # ]
 # ///
 
+
 import os
 import sys
-import pandas as pd
-import numpy as np
-import seaborn as sns
-import matplotlib.pyplot as plt
 import requests
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, precision_score, recall_score
+from dotenv import load_dotenv
 
-API_TOKEN = os.getenv("AIPROXY_TOKEN")
-if not API_TOKEN:
-    print("Error: AIPROXY_TOKEN environment variable not set.")
+# Load environment variables
+load_dotenv()
+AIPROXY_TOKEN = os.getenv("AIPROXY_TOKEN")
+if not AIPROXY_TOKEN:
+    print("Error: AIPROXY_TOKEN not set in environment.")
     sys.exit(1)
 
-API_URL = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
-HEADERS = {
-    "Authorization": f"Bearer {API_TOKEN}",
-    "Content-Type": "application/json"
-}
-
-def load_data(file_path):
+def load_data(file_path: str) -> pd.DataFrame:
+    """Load CSV data with fallback for encoding issues."""
     try:
         df = pd.read_csv(file_path, encoding="utf-8")
-        print(f"Successfully loaded {file_path}")
+        print(f"Loaded file successfully: {file_path}")
     except UnicodeDecodeError:
         df = pd.read_csv(file_path, encoding="latin1")
-        print(f"Fallback to Latin-1 encoding for {file_path}")
+        print(f"Used fallback encoding to load file: {file_path}")
     except Exception as e:
-        print(f"Error loading file: {e}")
+        print(f"Failed to read the file due to: {e}")
         sys.exit(1)
     return df
 
-def analyze_data(df):
-    numeric_cols = df.select_dtypes(include=np.number).columns.tolist()
-    numeric_df = df.apply(pd.to_numeric, errors="coerce")
-    correlation_matrix = numeric_df.corr().to_dict() if len(numeric_cols) > 1 else {}
+def analyze_dataset(df: pd.DataFrame) -> dict:
+    """Perform basic dataset analysis."""
+    numeric_cols = df.select_dtypes(include=["number"]).columns.tolist()
+    datetime_cols = df.select_dtypes(include=["datetime"]).columns.tolist()
 
-    stats = df.describe(include="all").to_dict()
-    missing_values = df.isnull().sum().to_dict()
-
-    return {
+    summary = {
         "shape": df.shape,
         "columns": df.columns.tolist(),
-        "missing_values": missing_values,
-        "stats": stats,
-        "correlation_matrix": correlation_matrix,
+        "missing_values": df.isnull().sum().to_dict(),
+        "numeric_columns": numeric_cols,
+        "datetime_columns": datetime_cols,
     }
 
-def generate_visualizations(df, output_dir):
-    os.makedirs(output_dir, exist_ok=True)
-    numeric_cols = df.select_dtypes(include=np.number).columns
+    # Generate statistics for numeric columns
+    numeric_stats = df.select_dtypes(include=["number"]).describe().to_dict()
+    summary["statistics"] = numeric_stats
 
-    file_links = []
-    if len(numeric_cols) >= 1:
-        plt.figure(figsize=(8, 6))
+    return summary
+
+def visualize_data(df: pd.DataFrame, output_dir: str):
+    """Generate up to 3 visualizations and save them."""
+    os.makedirs(output_dir, exist_ok=True)
+    plots = 0
+
+    numeric_cols = df.select_dtypes(include=["number"]).columns
+    if len(numeric_cols) > 0:
+        plt.figure(figsize=(6, 6), dpi=150)
         sns.histplot(df[numeric_cols[0]], kde=True, color="blue")
         plt.title(f"Distribution of {numeric_cols[0]}")
-        hist_path = os.path.join(output_dir, "histogram.png")
-        plt.savefig(hist_path)
-        file_links.append(hist_path)
+        plt.savefig(os.path.join(output_dir, "histogram.png"))
         plt.close()
+        plots += 1
 
     if len(numeric_cols) >= 2:
-        plt.figure(figsize=(8, 6))
+        plt.figure(figsize=(6, 6), dpi=150)
         sns.scatterplot(x=numeric_cols[0], y=numeric_cols[1], data=df)
         plt.title(f"Scatterplot: {numeric_cols[0]} vs {numeric_cols[1]}")
-        scatter_path = os.path.join(output_dir, "scatterplot.png")
-        plt.savefig(scatter_path)
-        file_links.append(scatter_path)
+        plt.savefig(os.path.join(output_dir, "scatterplot.png"))
         plt.close()
+        plots += 1
 
-    if len(numeric_cols) > 1:
-        plt.figure(figsize=(10, 8))
+        plt.figure(figsize=(6, 6), dpi=150)
         sns.heatmap(df[numeric_cols].corr(), annot=True, cmap="coolwarm")
         plt.title("Correlation Heatmap")
-        heatmap_path = os.path.join(output_dir, "heatmap.png")
-        plt.savefig(heatmap_path)
-        file_links.append(heatmap_path)
+        plt.savefig(os.path.join(output_dir, "heatmap.png"))
         plt.close()
+        plots += 1
 
-    return file_links
+    print(f"Generated {plots} visualizations.")
 
-def generate_readme(summary, visual_links, output_dir):
-    """
-    Generate a README using multiple LLM calls and improved formatting.
-    """
-    # Step 1: Generate Key Insights
-    insights_prompt = f"""
-    Analyze the following dataset summary and derive key insights:
+def generate_readme(summary: dict, output_dir: str):
+    """Generate a README.md file using the AI Proxy."""
+    prompt = f"""
+    Summarize the following dataset analysis in Markdown format for a README.md file:
 
     - Shape: {summary['shape']}
     - Columns: {summary['columns']}
     - Missing Values: {summary['missing_values']}
-    - Correlation Matrix: {summary['correlation_matrix']}
+    - Statistics: {summary.get('statistics', 'N/A')}
+
+    Include:
+    - A brief introduction
+    - Key findings and insights
+    - Mention of visualizations
     """
 
-    insights_response = call_ai(insights_prompt)
-
-    # Step 2: Generate Visualization Descriptions
-    visualization_prompt = f"""
-    Describe the following visualizations in Markdown format:
-
-    - Histogram: {visual_links[0] if len(visual_links) > 0 else "No visualization"}
-    - Scatterplot: {visual_links[1] if len(visual_links) > 1 else "No visualization"}
-    - Heatmap: {visual_links[2] if len(visual_links) > 2 else "No visualization"}
-    """
-
-    visualization_response = call_ai(visualization_prompt)
-
-    # Step 3: Combine Results into a README
-    readme_content = f"""
-    # Dataset Analysis
-
-    ## Overview
-    This document provides an analysis of the dataset, summarizing key findings and visualizations.
-
-    ## Key Insights
-    {insights_response}
-
-    ## Visualizations
-    {visualization_response}
-
-    ## Files
-    - [Histogram]({visual_links[0]}) if exists.
-    - [Scatterplot]({visual_links[1]}) if exists.
-    - [Heatmap]({visual_links[2]}) if exists.
-    """
-
-    # Save README
-    readme_path = os.path.join(output_dir, "README.md")
-    with open(readme_path, "w") as f:
-        f.write(readme_content)
-    print(f"README generated successfully at: {readme_path}")
-
-def call_ai(prompt):
-    """
-    Helper function to call AI Proxy and return the response.
-    """
+    url = "https://aiproxy.sanand.workers.dev/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {AIPROXY_TOKEN}",
+        "Content-Type": "application/json"
+    }
     data = {
         "model": "gpt-4o-mini",
         "messages": [
-            {"role": "system", "content": "You are an AI assistant specializing in dataset summaries."},
-            {"role": "user", "content": prompt},
-        ],
+            {"role": "system", "content": "You are an expert data analyst."},
+            {"role": "user", "content": prompt}
+        ]
     }
+
     try:
-        response = requests.post(API_URL, headers=HEADERS, json=data)
-        response.raise_for_status()
-        return response.json()["choices"][0]["message"]["content"]
+        response = requests.post(url, headers=headers, json=data)
+        if response.status_code == 200:
+            readme_content = response.json()['choices'][0]['message']['content']
+        else:
+            print(f"Failed to generate README.md: {response.text}")
+            readme_content = "README generation failed."
     except Exception as e:
-        print(f"Error during AI call: {e}")
-        return "Error generating content. Please review the analysis."
+        print(f"OpenAI failed: {e}")
+        readme_content = f"""# Dataset Analysis
+
+## Summary
+- **Shape**: {summary['shape']}
+- **Columns**: {summary['columns']}
+- **Missing Values**: {summary['missing_values']}
+
+## Insights
+OpenAI assistance was unavailable, but here are key insights based on the analysis:
+
+- The dataset contains {summary['shape'][0]} rows and {summary['shape'][1]} columns.
+- Missing values were found in the following columns: {', '.join([k for k, v in summary['missing_values'].items() if v > 0])}.
+- Summary statistics for numeric columns are available in the dataset.
+
+## Visualizations
+Visualizations have been saved in the output directory:
+1. Histogram of the first numeric column.
+2. Scatterplot of the first two numeric columns.
+3. Correlation heatmap of numeric columns.
+
+"""
+
+    # Write README.md
+    readme_path = os.path.join(output_dir, "README.md")
+    with open(readme_path, "w") as file:
+        file.write(readme_content)
+    print(f"README.md generated at {readme_path}")
 
 def main():
     if len(sys.argv) != 2:
@@ -171,17 +167,11 @@ def main():
     file_path = sys.argv[1]
     output_dir = os.path.splitext(file_path)[0]
 
-    # Step 1: Load Data
+    # Load, analyze, visualize, and summarize data
     df = load_data(file_path)
-
-    # Step 2: Analyze Data
-    summary = analyze_data(df)
-
-    # Step 3: Generate Visualizations
-    visual_links = generate_visualizations(df, output_dir)
-
-    # Step 4: Generate README
-    generate_readme(summary, visual_links, output_dir)
+    summary = analyze_dataset(df)
+    visualize_data(df, output_dir)
+    generate_readme(summary, output_dir)
 
 if __name__ == "__main__":
     main()
